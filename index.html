@@ -274,7 +274,7 @@ function reset(full) {
   camX = 0;
   particles = [];
   flagRaise = 0;
-  if (full) { coinsCollected = 0; lives = 3; }
+  if (full) { coinsCollected = 0; lives = 1; }
   coins = coinDefs.map(c => ({x:c[0], y:c[1], r:9, got:false, bob:Math.random()*Math.PI*2}));
   enemies = enemyDefs.map(e => ({
     x:e.x, y:296, w:28, h:24, dir:-1,
