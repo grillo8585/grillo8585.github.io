@@ -198,16 +198,18 @@
 
   <div id="hud">
     <div class="hud-item"><span class="coin-dot"></span><span id="coins">0</span></div>
+    <div class="hud-item" id="bottlesHud" style="display:none">🍼 <span id="bottleCount">0</span></div>
     <div class="hud-item" id="lives"></div>
   </div>
 
   <div class="overlay" id="startScreen">
     <h1>⛰️ Aventura</h1>
-    <p>Recoge monedas, salta sobre los enemigos y llega a la bandera. ¡No caigas al vacío!</p>
+    <p>Recoge monedas, lanza biberones 🍼 y vence al jefe 👾 de cada nivel. La estrella ⭐ te hace invencible. ¡No caigas al vacío!</p>
     <div class="keys">
       <div class="keycap"><b>A</b>Izquierda</div>
       <div class="keycap"><b>D</b>Derecha</div>
       <div class="keycap"><b>espacio</b>Saltar</div>
+      <div class="keycap"><b>J</b>Biberón</div>
     </div>
     <input id="playerName" type="text" placeholder="Tu nombre" maxlength="12" autocomplete="off" autocorrect="off" spellcheck="false">
     <button id="startBtn">Jugar</button>
@@ -228,6 +230,7 @@
       <div class="tbtn" data-key="right">▶</div>
     </div>
     <div class="pad">
+      <div class="tbtn" data-key="throw">🍼</div>
       <div class="tbtn" data-key="jump">▲</div>
     </div>
   </div>
@@ -263,7 +266,11 @@ const GRAVITY = 0.6;
 let LEVEL_END = 3400;        // se ajusta por nivel
 let platforms = [];          // estáticas + móviles del nivel actual
 let movers = [];             // subconjunto que se mueve
-let coins, enemies, player, camX, coinsCollected, lives, state, particles, boss;
+let coins, enemies, player, camX, coinsCollected, lives, state, particles, boss, items, bottles;
+let throwCooldown = 0;
+let bottleAmmo = 0;
+let nextLifeAt = 30;   // próxima meta de monedas para vida extra
+let lifeMsg = 0;       // temporizador del aviso "¡Vida extra!"
 let flagRaise = 0;
 let currentLevel = 0;
 let levelIntro = 0;
@@ -275,7 +282,7 @@ let tick = 0;
 const LEVELS = [
   // ===== Nivel 1: el original =====
   {
-    end: 3400,
+    end: 3500,
     platforms: [
       {x:0,    y:328, w:640,  h:32},
       {x:704,  y:328, w:560,  h:32},
@@ -292,6 +299,9 @@ const LEVELS = [
       {x:2280, y:230, w:128, h:24},
       {x:2900, y:240, w:96,  h:24},
       {x:3080, y:190, w:96,  h:24},
+      {x:600,  y:250, w:32, h:32, block:true},
+      {x:1750, y:250, w:32, h:32, block:true},
+      {x:3480, y:60, w:40, h:300, hidden:true},
     ],
     coins: [
       [340,210],[360,210],[540,150],[880,195],[910,195],[1100,145],
@@ -302,8 +312,8 @@ const LEVELS = [
       {x:760,  minX:710, maxX:1240},
       {x:1450, minX:1370,maxX:1820},
       {x:2250, minX:2170,maxX:2620},
-      {x:2820, minX:2750,maxX:3200},
     ],
+    boss: { x:3150, w:70, h:86, minX:2900, maxX:3460, hp:2, ground:328 },
   },
 
   // ===== Nivel 2: plataformas móviles =====
@@ -324,6 +334,9 @@ const LEVELS = [
       // plataformas fijas para monedas
       {x:300, y:230, w:110, h:24},
       {x:1180, y:150, w:110, h:24},
+      {x:1000, y:250, w:32, h:32, block:true},
+      {x:2700, y:250, w:32, h:32, block:true},
+      {x:3560, y:60, w:40, h:300, hidden:true},
     ],
     coins: [
       [330,190],[370,190],[700,260],[820,260],[1000,290],[1200,120],
@@ -332,9 +345,9 @@ const LEVELS = [
     ],
     enemies: [
       {x:1000, minX:950,  maxX:1450},
-      {x:2680, minX:2630, maxX:3560},
-      {x:3000, minX:2630, maxX:3560},
+      {x:2680, minX:2630, maxX:2900},
     ],
+    boss: { x:3150, w:70, h:86, minX:2750, maxX:3540, hp:3, ground:328 },
   },
 
   // ===== Nivel 3: tramo corto + JEFE FINAL =====
@@ -347,6 +360,8 @@ const LEVELS = [
       {x:380,  y:240, w:110, h:24},
       // puente móvil sobre el único hueco (560..880)
       {x:720,  y:300, w:110, h:20, move:{axis:'x', range:180, speed:0.018, phase:0}},
+      {x:1000, y:250, w:32, h:32, block:true},
+      {x:1500, y:250, w:32, h:32, block:true},
       {x:2780, y:60, w:40, h:300, hidden:true}, // muro invisible al final de la arena
     ],
     coins: [
@@ -356,7 +371,7 @@ const LEVELS = [
     enemies: [
       {x:1000, minX:900, maxX:1300},
     ],
-    boss: { x:1900, w:70, h:86, minX:1360, maxX:2700, hp:3, ground:328 },
+    boss: { x:1900, w:70, h:86, minX:1360, maxX:2700, hp:4, ground:328 },
   },
 ];
 
@@ -373,9 +388,13 @@ function loadLevel(i) {
     minX:e.minX, maxX:e.maxX, dead:false, squish:0
   }));
   boss = L.boss ? makeBoss(L.boss) : null;
+  items = [];
+  bottles = [];
+  throwCooldown = 0;
   player = {
     x: 60, y: 250, w: 26, h: 30, vx: 0, vy: 0,
-    onGround: false, face: 1, walk: 0, dead: false, deadTimer: 0, ground: null
+    onGround: false, face: 1, walk: 0, dead: false, deadTimer: 0, ground: null,
+    invincible: 0
   };
   camX = 0; particles = []; flagRaise = 0; levelIntro = 100; tick = 0;
 }
@@ -391,7 +410,7 @@ function makeBoss(cfg) {
 }
 
 function reset(full) {
-  if (full) { coinsCollected = 0; lives = 3; currentLevel = 0; }
+  if (full) { coinsCollected = 0; lives = 3; currentLevel = 0; bottleAmmo = 0; nextLifeAt = 30; }
   loadLevel(currentLevel);
 }
 
@@ -411,6 +430,7 @@ window.addEventListener('keydown', e => {
   if (k === ' ' || k === 'spacebar' || k === 'arrowup' || k === 'w') {
     keys.jump = true; e.preventDefault();
   }
+  if (k === 'j' || k === 'k' || k === 'enter') throwBottle();
 });
 window.addEventListener('keyup', e => {
   const k = e.key.toLowerCase();
@@ -429,6 +449,7 @@ if ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0) {
 document.querySelectorAll('.tbtn').forEach(btn => {
   const key = btn.dataset.key;
   const set = v => {
+    if (key === 'throw') { if (v) throwBottle(); return; }
     if (key === 'left') keys.left = v;
     if (key === 'right') keys.right = v;
     if (key === 'jump') { keys.jump = v; if (!v) jumpHeld = false; }
@@ -446,10 +467,43 @@ function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// Lanzar un biberón en la dirección que mira el jugador
+function throwBottle() {
+  if (state !== 'play' || !player || player.dead) return;
+  if (throwCooldown > 0 || bottleAmmo <= 0) return;
+  throwCooldown = 20;
+  bottleAmmo--;
+  const p = player;
+  bottles.push({
+    x: p.x + p.w / 2 + p.face * 14,
+    y: p.y + 8,
+    vx: p.face * 6.5,
+    vy: 0,
+    r: 8,
+    spin: 0,
+    life: 75
+  });
+  beep(880, 0, 0.07, 'triangle', 0.14);
+}
+
+// Golpear un bloque "?" suelta un power-up ALEATORIO (estrella o biberones)
+function hitBlock(plat) {
+  plat.used = true;
+  plat.bump = 8; // animación de rebote (solo visual)
+  beep(330, 0, 0.06, 'square', 0.14);
+  const type = Math.random() < 0.5 ? 'star' : 'bottle';
+  items.push({
+    x: plat.x + plat.w / 2 - 10, y: plat.y - 22, w: 20, h: 20,
+    vy: -3.5, type, settled: false, got: false, bob: 0
+  });
+}
+
 function update() {
   if (state !== 'play') return;
   const p = player;
   tick++;
+  if (throwCooldown > 0) throwCooldown--;
+  if (p.invincible > 0) p.invincible--;
 
   // Actualiza plataformas móviles y guarda su desplazamiento (dx,dy) de este frame
   for (const m of movers) {
@@ -507,7 +561,7 @@ function update() {
   for (const plat of platforms) {
     if (rectsOverlap(p, plat)) {
       if (p.vy > 0) { p.y = plat.y - p.h; p.onGround = true; p.ground = plat; }
-      else if (p.vy < 0) p.y = plat.y + plat.h;
+      else if (p.vy < 0) { p.y = plat.y + plat.h; if (plat.block && !plat.used) hitBlock(plat); }
       p.vy = 0;
     }
   }
@@ -545,9 +599,9 @@ function update() {
 
     if (rectsOverlap(p, e)) {
       const stomping = p.vy > 0 && (p.y + p.h) - e.y < 18;
-      if (stomping) {
+      if (stomping || p.invincible > 0) {
         e.dead = true; e.squish = 1;
-        p.vy = -8; // rebote
+        if (stomping) p.vy = -8; // rebote
         coinsCollected++;
         stompSound();
         spawnParticles(e.x + e.w/2, e.y, COLORS.enemy, 10);
@@ -556,6 +610,58 @@ function update() {
       }
     }
   }
+
+  // ----- Power-ups salidos de los bloques -----
+  for (const it of items) {
+    if (it.got) continue;
+    if (!it.settled) {
+      it.vy += 0.4; it.y += it.vy;
+      // se posa sobre una plataforma
+      for (const plat of platforms) {
+        if (it.vy >= 0 && it.x + it.w > plat.x && it.x < plat.x + plat.w &&
+            it.y + it.h >= plat.y && it.y + it.h <= plat.y + plat.h + 14) {
+          it.y = plat.y - it.h; it.vy = 0; it.settled = true;
+        }
+      }
+    }
+    it.bob += 0.1;
+    if (Math.hypot((p.x + p.w/2) - (it.x + it.w/2), (p.y + p.h/2) - (it.y + it.h/2)) < 22) {
+      it.got = true;
+      if (it.type === 'star') {
+        p.invincible = 480;
+        coinSound(); beep(1175, 0.06, 0.18, 'square', 0.18);
+        spawnParticles(it.x + it.w/2, it.y, '#ffd24d', 18);
+      } else {
+        bottleAmmo += 5;
+        coinSound(); beep(740, 0.05, 0.16, 'triangle', 0.16);
+        spawnParticles(it.x + it.w/2, it.y, '#cfe2ff', 16);
+      }
+    }
+  }
+  items = items.filter(it => !it.got);
+
+  // ----- Biberones lanzados por el jugador -----
+  for (const bo of bottles) {
+    bo.x += bo.vx; bo.y += bo.vy; bo.life--; bo.spin += 0.4;
+    const boRect = { x: bo.x - 7, y: bo.y - 9, w: 14, h: 18 };
+    // colisión con enemigos
+    for (const e of enemies) {
+      if (!e.dead && rectsOverlap(boRect, e)) {
+        e.dead = true; e.squish = 1; coinsCollected++; stompSound();
+        spawnParticles(e.x + e.w/2, e.y, COLORS.enemy, 10);
+        bo.life = 0;
+      }
+    }
+    // colisión con el jefe
+    if (boss && boss.alive && bo.life > 0 && rectsOverlap(boRect, boss)) {
+      const beforeLevel = currentLevel;
+      hitBoss();
+      spawnParticles(bo.x, bo.y, '#e8e8e8', 8);
+      bo.life = 0;
+      if (currentLevel !== beforeLevel) break; // cambió de nivel: no seguir con biberones viejos
+    }
+  }
+  bottles = bottles.filter(bo => bo.life > 0 && (bo.x - camX) > -40 && (bo.x - camX) < W + 40);
 
   // ----- Jefe final -----
   if (boss && boss.alive) updateBoss(p);
@@ -572,7 +678,21 @@ function update() {
   }
   particles = particles.filter(pt => pt.life > 0);
 
+  // Vida extra cada 30 monedas
+  while (coinsCollected >= nextLifeAt) {
+    nextLifeAt += 30;
+    gainLife();
+  }
+
   updateHUD();
+}
+
+function gainLife() {
+  lives++;
+  lifeMsg = 110;
+  beep(784, 0, 0.10, 'square', 0.18);   // sol
+  beep(1047, 0.10, 0.20, 'square', 0.18); // do agudo
+  spawnParticles(player.x + player.w / 2, player.y, '#ff5d7a', 18);
 }
 
 function spawnParticles(x, y, color, n) {
@@ -593,12 +713,31 @@ function loseLife() {
   else { reset(false); }
 }
 
-// ---------- Jefe final ----------
+// ---------- Jefe ----------
+function defeatBoss() {
+  boss.alive = false;
+  spawnParticles(boss.x + boss.w / 2, boss.y + boss.h / 2, '#e8e8e8', 30);
+  if (currentLevel < LEVELS.length - 1) nextLevel();
+  else { state = 'win'; win(); }
+}
+function hitBoss() {
+  const b = boss;
+  if (!b || !b.alive || b.invuln > 0) return false;
+  b.hp--; b.hitFlash = 14; b.invuln = 45;
+  stompSound();
+  spawnParticles(b.x + b.w / 2, b.y, '#e8e8e8', 14);
+  if (b.hp <= 0) defeatBoss();
+  return true;
+}
+
 function updateBoss(p) {
   const b = boss;
   if (b.intro > 0) b.intro--;
   if (b.hitFlash > 0) b.hitFlash--;
   if (b.invuln > 0) b.invuln--;
+
+  // ¿el jugador está cerca de la arena? (para no atacar de lejos)
+  const near = Math.abs((p.x + p.w / 2) - (b.x + b.w / 2)) < 680;
 
   // Patrulla de un lado a otro
   b.x += b.dir * 1.3;
@@ -607,9 +746,9 @@ function updateBoss(p) {
   // Mira hacia el jugador
   b.face = (p.x + p.w / 2 < b.x + b.w / 2) ? -1 : 1;
 
-  // Lanza proyectiles ("manchas") hacia el jugador
+  // Lanza proyectiles ("manchas") hacia el jugador (solo si está cerca)
   b.shootTimer--;
-  if (b.shootTimer <= 0 && b.intro <= 0 && !p.dead) {
+  if (b.shootTimer <= 0 && b.intro <= 0 && near && !p.dead) {
     b.shootTimer = 110 + Math.floor(Math.random() * 50);
     const sx = b.x + b.w / 2, sy = b.y + 26;
     const dx = (p.x + p.w / 2) - sx, dy = (p.y + p.h / 2) - sy;
@@ -623,24 +762,20 @@ function updateBoss(p) {
   for (const pr of b.projectiles) {
     pr.x += pr.vx; pr.y += pr.vy; pr.vy += 0.12; pr.life--;
     if (!p.dead && Math.hypot((p.x + p.w / 2) - pr.x, (p.y + p.h / 2) - pr.y) < pr.r + 11) {
-      p.dead = true; p.deadTimer = 0; p.vy = -8;
+      if (p.invincible > 0) { pr.life = 0; }   // invencible: revienta la mancha
+      else { p.dead = true; p.deadTimer = 0; p.vy = -8; }
     }
   }
   b.projectiles = b.projectiles.filter(pr => pr.life > 0 && pr.y < H + 40);
 
-  // Colisión jugador-jefe: pisar la cabeza le quita vida
+  // Colisión jugador-jefe
   if (!p.dead && rectsOverlap(p, b)) {
     const stomping = p.vy > 0 && (p.y + p.h) - b.y < 26;
-    if (stomping && b.invuln <= 0) {
-      b.hp--; b.hitFlash = 14; b.invuln = 45; p.vy = -10;
-      stompSound();
-      spawnParticles(b.x + b.w / 2, b.y, '#e8e8e8', 14);
-      if (b.hp <= 0) {
-        b.alive = false;
-        spawnParticles(b.x + b.w / 2, b.y + b.h / 2, '#e8e8e8', 30);
-        state = 'win'; win();
-      }
-    } else if (!stomping && b.invuln <= 0) {
+    if (stomping) {
+      hitBoss(); p.vy = -10;           // pisar la cabeza le quita vida
+    } else if (p.invincible > 0) {
+      hitBoss();                       // invencible: dañarlo al tocarlo
+    } else if (b.invuln <= 0) {
       p.dead = true; p.deadTimer = 0; p.vy = -8;
     }
   }
@@ -692,6 +827,29 @@ function drawPlatforms() {
     if (plat.hidden) continue;
     const x = plat.x - camX;
     if (x + plat.w < -20 || x > W + 20) continue;
+    if (plat.block) {
+      if (plat.bump > 0) plat.bump -= 1;
+      const by = plat.y - (plat.bump || 0);
+      if (!plat.used) {
+        ctx.fillStyle = '#d98a1f'; ctx.fillRect(x, by, plat.w, plat.h);
+        ctx.fillStyle = '#f5b341'; ctx.fillRect(x + 2, by + 2, plat.w - 4, plat.h - 4);
+        ctx.fillStyle = '#9c5a10';
+        ctx.fillRect(x + 3, by + 3, 3, 3); ctx.fillRect(x + plat.w - 6, by + 3, 3, 3);
+        ctx.fillRect(x + 3, by + plat.h - 6, 3, 3); ctx.fillRect(x + plat.w - 6, by + plat.h - 6, 3, 3);
+        ctx.fillStyle = '#7a3e00';
+        ctx.font = 'bold 20px system-ui, -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('?', x + plat.w / 2, by + plat.h / 2 + 7);
+        ctx.textAlign = 'left';
+      } else {
+        ctx.fillStyle = '#6a4a2a'; ctx.fillRect(x, by, plat.w, plat.h);
+        ctx.fillStyle = '#83603a'; ctx.fillRect(x + 2, by + 2, plat.w - 4, plat.h - 4);
+        ctx.fillStyle = '#4f351c';
+        ctx.fillRect(x + 3, by + 3, 3, 3); ctx.fillRect(x + plat.w - 6, by + 3, 3, 3);
+        ctx.fillRect(x + 3, by + plat.h - 6, 3, 3); ctx.fillRect(x + plat.w - 6, by + plat.h - 6, 3, 3);
+      }
+      continue;
+    }
     if (plat.move) {
       // plataforma móvil: tono anaranjado con borde, para que se note
       ctx.fillStyle = '#b5651d';
@@ -885,6 +1043,19 @@ function drawPlayer() {
   const x = Math.round(p.x - camX);
   babyTick++;
 
+  // Aura de invencibilidad (estrella)
+  if (!p.dead && p.invincible > 0) {
+    const hue = (tick * 9) % 360;
+    const blink = p.invincible < 120 && (tick % 8 < 4); // parpadea al acabarse
+    ctx.save();
+    ctx.globalAlpha = blink ? 0.25 : 0.55;
+    ctx.fillStyle = `hsl(${hue}, 90%, 60%)`;
+    ctx.beginPath();
+    ctx.ellipse(x + p.w/2, p.y + p.h/2, p.w*0.95, p.h*0.7, 0, 0, 7);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // sombra
   if (!p.dead) {
     ctx.fillStyle = 'rgba(0,0,0,0.15)';
@@ -1033,6 +1204,65 @@ function drawLevelIntro() {
   ctx.textAlign = 'left';
 }
 
+function drawItems() {
+  if (!items) return;
+  for (const it of items) {
+    if (it.got) continue;
+    const x = it.x + it.w / 2 - camX;
+    if (x < -30 || x > W + 30) continue;
+    const y = it.y + it.h / 2 + (it.settled ? Math.sin(it.bob) * 2 : 0);
+    if (it.type === 'star') {
+      const r = it.w / 2 + 2;
+      ctx.save(); ctx.globalAlpha = 0.4; ctx.fillStyle = '#fff3b0';
+      ctx.beginPath(); ctx.arc(x, y, r * 1.5, 0, 7); ctx.fill(); ctx.restore();
+      ctx.fillStyle = '#ffd24d'; ctx.strokeStyle = '#c9881e'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const ang = -Math.PI / 2 + i * Math.PI / 5;
+        const rr = (i % 2 === 0 ? r : r * 0.45);
+        const px = x + Math.cos(ang) * rr, py = y + Math.sin(ang) * rr;
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#5a3a00';
+      ctx.fillRect(x - 4, y - 1, 2, 3); ctx.fillRect(x + 2, y - 1, 2, 3);
+    } else {
+      // biberón (más grande, vertical)
+      ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = '#cfe2ff';
+      ctx.beginPath(); ctx.arc(x, y, it.w * 0.9, 0, 7); ctx.fill(); ctx.restore();
+      ctx.fillStyle = '#eef4ff'; ctx.fillRect(x - 7, y - 8, 14, 18);
+      ctx.fillStyle = '#dfe9fb'; ctx.fillRect(x - 7, y - 8, 14, 4);
+      ctx.fillStyle = '#e8c39a'; ctx.fillRect(x - 4, y - 13, 8, 5);
+      ctx.fillStyle = '#9ec5ff'; ctx.fillRect(x - 7, y - 1, 7, 1); ctx.fillRect(x - 7, y + 4, 7, 1);
+    }
+  }
+}
+
+function drawBottles() {
+  if (!bottles) return;
+  for (const bo of bottles) {
+    const x = bo.x - camX;
+    if (x < -20 || x > W + 20) continue;
+    ctx.save();
+    ctx.translate(x, bo.y);
+    ctx.rotate(bo.spin);
+    // cuerpo del biberón
+    ctx.fillStyle = '#eef4ff';
+    ctx.fillRect(-5, -7, 10, 15);
+    ctx.fillStyle = '#dfe9fb';
+    ctx.fillRect(-5, -7, 10, 3);
+    // tetina
+    ctx.fillStyle = '#e8c39a';
+    ctx.fillRect(-3, -11, 6, 4);
+    ctx.fillStyle = '#d9ad82';
+    ctx.fillRect(-2, -13, 4, 2);
+    // marcas de medida
+    ctx.fillStyle = '#9ec5ff';
+    ctx.fillRect(-5, -1, 5, 1); ctx.fillRect(-5, 3, 5, 1);
+    ctx.restore();
+  }
+}
+
 function drawFlag() {
   const x = LEVEL_END - camX;
   if (x < -40 || x > W + 60) return;
@@ -1066,12 +1296,39 @@ function render() {
   drawBackground();
   if (!boss) drawFlag();
   drawPlatforms();
+  drawItems();
   drawCoins();
   drawEnemies();
   drawBoss();
+  drawBottles();
   drawParticles();
   drawPlayer();
   drawLevelIntro();
+
+  // Indicador de invencibilidad
+  if (player && player.invincible > 0 && state === 'play') {
+    const secs = Math.ceil(player.invincible / 60);
+    ctx.save();
+    ctx.font = 'bold 18px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffd24d';
+    ctx.fillText('⭐ ' + secs + 's', W - 12, 26);
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  // Aviso de vida extra
+  if (lifeMsg > 0) {
+    lifeMsg--;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, lifeMsg / 30);
+    ctx.font = 'bold 22px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff5d7a';
+    ctx.fillText('❤ ¡Vida extra!', W / 2, 64);
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
 
   if (state === 'win' && flagRaise < 1) flagRaise = Math.min(1, flagRaise + 0.02);
 }
@@ -1079,11 +1336,17 @@ function render() {
 // ---------- HUD / pantallas ----------
 const coinsEl = document.getElementById('coins');
 const livesEl = document.getElementById('lives');
+const bottlesHud = document.getElementById('bottlesHud');
+const bottleCountEl = document.getElementById('bottleCount');
 function updateHUD() {
   coinsEl.textContent = coinsCollected;
   let h = '';
   for (let i = 0; i < lives; i++) h += '<span class="heart">❤</span>';
   livesEl.innerHTML = h;
+  if (bottlesHud) {
+    bottlesHud.style.display = bottleAmmo > 0 ? '' : 'none';
+    if (bottleCountEl) bottleCountEl.textContent = bottleAmmo;
+  }
 }
 
 const startScreen = document.getElementById('startScreen');
